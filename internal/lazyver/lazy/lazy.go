@@ -18,14 +18,13 @@ func Run(path string) yaml.Version {
 	minor := 0
 	patch := 0
 
-	//ref, err := r.Head()
 	CheckIfError(err)
 
-	//hash := ref.Hash()
 	cCount := 0
 
 	v, err := yaml.Read(path)
 	opts := &git.LogOptions{Order: git.LogOrderCommitterTime}
+	last := time.Now()
 
 	if v != nil {
 		if v.Kind != "lazy" {
@@ -41,18 +40,16 @@ func Run(path string) yaml.Version {
 		cCount += patch
 
 		opts.Since = &v.Last
+		last = v.Last
 	}
 
 	cIter, err := r.Log(opts)
 	CheckIfError(err)
 
-	last := time.Now()
-	i := 0
 	err = cIter.ForEach(func(c *object.Commit) error {
 		cCount++
-		if i == 0 {
+		if !c.Author.When.Before(last) {
 			last = c.Author.When
-			i++
 		}
 		return nil
 	})
@@ -64,7 +61,7 @@ func Run(path string) yaml.Version {
 	minor, _ = strconv.Atoi(chars[1])
 	patch, _ = strconv.Atoi(chars[2])
 
-	return yaml.Write(path, major, minor, patch, last.Add(10*time.Millisecond), "lazy")
+	return yaml.Write(path, major, minor, patch, last.Add(1*time.Second), "lazy")
 }
 
 func CheckIfError(err error) {
