@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -9,15 +10,22 @@ import (
 )
 
 type Version struct {
-	Major int       `yaml:"major"`
-	Minor int       `yaml:"minor"`
-	Patch int       `yaml:"patch"`
-	Last  time.Time `yaml:"last"`
-	Kind  string    `yaml:"kind"`
+	Version string    `yaml:"version"`
+	Major   int       `yaml:"major"`
+	Minor   int       `yaml:"minor"`
+	Patch   int       `yaml:"patch"`
+	Last    time.Time `yaml:"last"`
+	Kind    string    `yaml:"kind"`
 }
 
 func Write(path string, major, minor, patch int, last time.Time, kind string) Version {
-	version := Version{Major: major, Minor: minor, Patch: patch, Last: last, Kind: kind}
+	version := Version{
+		Version: fmt.Sprintf("v%d.%d.%d", major, minor, patch),
+		Major:   major,
+		Minor:   minor,
+		Patch:   patch,
+		Last:    last,
+		Kind:    kind}
 	yamlBytes, err := y.Marshal(version)
 
 	if err != nil {

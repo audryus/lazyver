@@ -5,6 +5,7 @@ It'll create a new file in the path
 if no Path is used, then the current path is consider.
 
 ```yaml
+version: v1.2.3
 major: 1
 minor: 2
 patch: 3

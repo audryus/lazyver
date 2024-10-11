@@ -11,7 +11,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
-func Run(path string) yaml.Version {
+func Run(path string) string {
 	r, err := git.PlainOpen(path)
 	CheckIfError(err)
 	major := 0
@@ -66,7 +66,9 @@ func Run(path string) yaml.Version {
 		}
 	}
 
-	return yaml.Write(path, major, minor, patch, last.Add(10*time.Millisecond), "sem")
+	version := yaml.Write(path, major, minor, patch, last.Add(10*time.Millisecond), "sem")
+
+	return fmt.Sprintf("v%d.%d.%d", version.Major, version.Minor, version.Patch)
 }
 
 func CheckIfError(err error) {

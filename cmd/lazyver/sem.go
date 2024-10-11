@@ -15,7 +15,7 @@ var semverCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		v := sem.Run(path)
 		if print {
-			fmt.Printf("v%d.%d.%d", v.Major, v.Minor, v.Patch)
+			fmt.Print(v)
 		}
 	},
 }
