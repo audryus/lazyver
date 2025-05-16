@@ -23,11 +23,13 @@ func Run(path string) string {
 	cCount := 0
 
 	v, err := yaml.Read(path)
+	CheckIfError(err)
+
 	opts := &git.LogOptions{Order: git.LogOrderCommitterTime}
 	last := time.Now()
 
 	if v != nil {
-		if v.Kind != "lazy" {
+		if len(v.Kind) > 0 && v.Kind != "lazy" {
 			panic(fmt.Sprintf("invalid kind: %s", v.Kind))
 		}
 

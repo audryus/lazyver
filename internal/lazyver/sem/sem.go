@@ -19,10 +19,12 @@ func Run(path string) string {
 	patch := 0
 
 	v, err := yaml.Read(path)
+	CheckIfError(err)
+
 	opts := &git.LogOptions{Order: git.LogOrderCommitterTime}
 
 	if v != nil {
-		if v.Kind != "sem" {
+		if len(v.Kind) > 0 && v.Kind != "sem" {
 			panic(fmt.Sprintf("invalid kind: %s", v.Kind))
 		}
 
@@ -49,7 +51,7 @@ func Run(path string) string {
 	})
 
 	CheckIfError(err)
-	slices.Reverse[[]string](messages)
+	slices.Reverse(messages)
 
 	for _, message := range messages {
 		if isMajor(message) {
@@ -77,9 +79,11 @@ func CheckIfError(err error) {
 	}
 }
 
-var majorKeys = []string{"BREAKING CHANGE", "BREAKING CHANGES", "!"}
-var minorKeys = []string{"feat", "chore", "build", "docs", "ci", "test", "style"}
-var patchKeys = []string{"fix", "perf", "revert", "refactor"}
+var (
+	majorKeys = []string{"BREAKING CHANGE", "BREAKING CHANGES", "!"}
+	minorKeys = []string{"feat", "chore", "build", "docs", "ci", "test", "style"}
+	patchKeys = []string{"fix", "perf", "revert", "refactor"}
+)
 
 func isMajor(message string) bool {
 	for _, key := range majorKeys {
@@ -98,6 +102,7 @@ func isMinor(message string) bool {
 	}
 	return false
 }
+
 func isPatch(message string) bool {
 	for _, key := range patchKeys {
 		if strings.HasPrefix(message, key) {

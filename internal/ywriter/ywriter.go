@@ -25,9 +25,9 @@ func Write(path string, major, minor, patch int, last time.Time, kind string) Ve
 		Minor:   minor,
 		Patch:   patch,
 		Last:    last,
-		Kind:    kind}
+		Kind:    kind,
+	}
 	yamlBytes, err := y.Marshal(version)
-
 	if err != nil {
 		panic(err)
 	}
@@ -46,12 +46,16 @@ func Write(path string, major, minor, patch int, last time.Time, kind string) Ve
 func Read(path string) (*Version, error) {
 	data, err := os.ReadFile(path + ".lazyver.yaml")
 	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("File not found, creating a new one.")
+			os.WriteFile(path+".lazyver.yaml", []byte(""), 0o644)
+			return nil, fmt.Errorf("file not found: %s", path)
+		}
 		return nil, err
 	}
 
 	version := new(Version)
 	err = y.Unmarshal(data, version)
-
 	if err != nil {
 		return nil, err
 	}

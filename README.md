@@ -15,7 +15,7 @@ kind: lazy
 
 # Usage
 
-Can't mix the two kinds. If needed delete the genertate file (.lazyver.yaml).
+Can't mix the two kinds. If needed delete the control file (.lazyver.yaml).
 
 ## Install
 > go install github.com/audryus/lazyver
