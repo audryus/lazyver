@@ -76,7 +76,10 @@ jobs:
           git config user.name  "lazyver-bot"
           git config user.email "bot@lazyver.local"
 
-          ORIGIN_URL="$(git remote get-url origin | sed -E 's#^(https?://|ssh://git@)##')"
+          # Normalize any remote form (https://, ssh://git@, git@host:path)
+          # into host/path so the OAuth2 HTTPS URL is always well formed.
+          ORIGIN_URL="$(git remote get-url origin \
+            | sed -E 's#^(https?://|ssh://git@|git@)##; s#^([^/:]+):#\1/#')"
           git remote set-url origin "https://oauth2:${TOKEN}@${ORIGIN_URL}"
 
           git tag -a "${VERSION}" -m "Release ${VERSION}"
