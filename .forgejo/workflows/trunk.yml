@@ -1,0 +1,99 @@
+name: Trunk Release
+
+# Runs after every push to trunk (i.e. after a branch merge).
+# The version source of truth is .lazyver.yaml, maintained automatically by
+# the lazyver commit-msg hook. If the version there was never tagged, the
+# tag is created and pushed, then goreleaser builds and publishes the
+# release for it. If the tag already exists, this pipeline is a no-op.
+
+on:
+  push:
+    branches:
+      - trunk
+
+env:
+  # Forgejo/Gitea API token used both for git tag push and goreleaser.
+  TOKEN: ${{ secrets.TOKEN }}
+
+jobs:
+  release:
+    runs-on: self-hosted
+    name: Tag & Release (from .lazyver.yaml)
+    container:
+      image: node:20-bookworm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: goreleaser and changelog need tags
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # ──────────────────────────────────────────────
+      # Read the version from lazyver's control file.
+      # ──────────────────────────────────────────────
+      - name: Read version from .lazyver.yaml
+        id: version
+        run: |
+          VERSION="$(awk '$1 == "version:" { print $2 }' .lazyver.yaml)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::.lazyver.yaml has no version field"
+            exit 1
+          fi
+          echo "Version from .lazyver.yaml: ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # ──────────────────────────────────────────────
+      # Skip when this version was already released
+      # (e.g. re-run of the pipeline on the same HEAD).
+      # ──────────────────────────────────────────────
+      - name: Check whether tag already exists
+        id: tagcheck
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "Tag ${VERSION} already exists. Nothing to release."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${VERSION} not found. Releasing."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ──────────────────────────────────────────────
+      # Create and push the annotated tag. Auth is
+      # injected into the HTTPS remote URL because the
+      # runner may not have push credentials configured.
+      # ──────────────────────────────────────────────
+      - name: Create and push tag
+        if: steps.tagcheck.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ forgejo.repository }}
+        run: |
+          git config user.name  "lazyver-bot"
+          git config user.email "bot@lazyver.local"
+
+          ORIGIN_URL="$(git remote get-url origin | sed -E 's#^(https?://|ssh://git@)##')"
+          git remote set-url origin "https://oauth2:${TOKEN}@${ORIGIN_URL}"
+
+          git tag -a "${VERSION}" -m "Release ${VERSION}"
+          git push origin "refs/tags/${VERSION}"
+
+      # ──────────────────────────────────────────────
+      # Build and publish binaries with goreleaser.
+      # GITEA_TOKEN makes goreleaser publish the release
+      # on the Forgejo instance detected from the remote.
+      # ──────────────────────────────────────────────
+      - name: Run goreleaser
+        if: steps.tagcheck.outputs.exists == 'false'
+        uses: https://github.com/goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITEA_TOKEN: ${{ secrets.TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.version }}
