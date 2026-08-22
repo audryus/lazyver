@@ -18,8 +18,8 @@ func newFakeRepo(t *testing.T) string {
 	return dir
 }
 
-// TestInstall writes the hook and checks content, executable bit and that a
-// second install overwrites cleanly (refreshing the binary path).
+// TestInstall writes the hooks and checks content, executable bit and that
+// a second install overwrites cleanly (refreshing the binary path).
 func TestInstall(t *testing.T) {
 	repo := newFakeRepo(t)
 
@@ -27,16 +27,29 @@ func TestInstall(t *testing.T) {
 		t.Fatalf("Install() error = %v", err)
 	}
 
-	hookPath := filepath.Join(repo, ".git", "hooks", HookName)
+	hookPath := filepath.Join(repo, ".git", "hooks", CommitMsgHook)
 	data, err := os.ReadFile(hookPath)
 	if err != nil {
 		t.Fatalf("hook not written: %v", err)
 	}
 	script := string(data)
-	for _, want := range []string{"#!/bin/sh", Marker, "/usr/local/bin/lazyver", `hook "$@"`} {
+	for _, want := range []string{"#!/bin/sh", Marker, "/usr/local/bin/lazyver"} {
 		if !strings.Contains(script, want) {
 			t.Errorf("hook script missing %q:\n%s", want, script)
 		}
+	}
+
+	// Both managed hooks must exist and delegate to the right subcommands.
+	postPath := filepath.Join(repo, ".git", "hooks", PostCommitHook)
+	postData, err := os.ReadFile(postPath)
+	if err != nil {
+		t.Fatalf("post-commit hook not written: %v", err)
+	}
+	if !strings.Contains(string(postData), "hook-post") {
+		t.Errorf("post-commit hook does not call hook-post:\n%s", postData)
+	}
+	if !strings.Contains(script, `hook "$@"`) {
+		t.Errorf("commit-msg hook does not forward args:\n%s", script)
 	}
 
 	info, err := os.Stat(hookPath)
@@ -68,6 +81,13 @@ func TestIsInstalled(t *testing.T) {
 	}
 	if !IsInstalled(repo) {
 		t.Error("IsInstalled after install = false, want true")
+	}
+	// Removing one of the two managed hooks must make IsInstalled fail.
+	if err := os.Remove(filepath.Join(repo, ".git", "hooks", PostCommitHook)); err != nil {
+		t.Fatal(err)
+	}
+	if IsInstalled(repo) {
+		t.Error("IsInstalled with missing post-commit hook = true, want false")
 	}
 }
 

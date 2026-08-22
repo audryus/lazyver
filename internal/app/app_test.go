@@ -17,13 +17,25 @@ func gitAvailable(t *testing.T) {
 	}
 }
 
-// newRepo creates a temp git repository with a test identity configured.
+// newRepo creates a temp git repository with a test identity configured
+// and real git hooks disabled (core.hooksPath points at an empty dir).
+// Disabling by config (instead of deleting hook files) matters because the
+// post-commit hook runs even during `commit --amend --no-verify`, and the
+// installed hook points at the test binary itself — invoking it would
+// recursively re-run the whole suite.
 func newRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// Reserve the temp dir before any other TempDir call so cleanup order
+	// does not matter.
+	noHooks := filepath.Join(t.TempDir(), "disabled-hooks")
+	if err := os.MkdirAll(noHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	run(t, dir, "init", "-b", "main")
 	run(t, dir, "config", "user.email", "test@lazyver.local")
 	run(t, dir, "config", "user.name", "lazyver test")
+	run(t, dir, "config", "core.hooksPath", noHooks)
 	return dir
 }
 
@@ -93,6 +105,23 @@ func hookInstalled(t *testing.T, repo string) bool {
 	return err == nil && strings.Contains(string(data), "lazyver")
 }
 
+// TestRunInitializesFromFullHistory also verifies that BOTH managed hooks
+// (commit-msg and post-commit) get installed.
+func TestBothHooksInstalled(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t)
+	commit(t, repo, "feat: one")
+	if _, err := Run(statefile.KindSemver, repo); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"commit-msg", "post-commit"} {
+		data, err := os.ReadFile(filepath.Join(repo, ".git", "hooks", name))
+		if err != nil || !strings.Contains(string(data), "lazyver") {
+			t.Errorf("hook %s not installed", name)
+		}
+	}
+}
+
 // TestRunIncrementalOnlyNewCommits ensures a second Run does not recount the
 // whole history: only commits after the stored hash are applied.
 func TestRunIncrementalOnlyNewCommits(t *testing.T) {
@@ -115,8 +144,9 @@ func TestRunIncrementalOnlyNewCommits(t *testing.T) {
 }
 
 // TestHookBumpThenRunNoDoubleCount is the critical end-to-end scenario:
-// the hook bumps and stages the version file, the commit is created, and a
-// later Run must NOT count that commit again.
+// the commit-msg hook bumps and marks pending, the post-commit hook amends
+// HEAD so the version file joins the commit, and a later Run must NOT count
+// that commit again.
 func TestHookBumpThenRunNoDoubleCount(t *testing.T) {
 	gitAvailable(t)
 	repo := newRepo(t)
@@ -134,34 +164,63 @@ func TestHookBumpThenRunNoDoubleCount(t *testing.T) {
 		t.Fatalf("HandleHookMessage() error = %v", err)
 	}
 
-	// The hook must have staged the version file.
-	status, _ := exec.Command("git", "-C", repo, "status", "--porcelain").CombinedOutput()
-	if !strings.Contains(string(status), ".lazyver.yaml") {
-		t.Fatalf("version file not staged by hook: %s", status)
-	}
-
-	// Finish the commit like git would after a successful commit-msg hook.
+	// Finish the commit like git would after a successful commit-msg hook,
+	// then simulate the post-commit hook (amend + lastHash update).
 	run(t, repo, "commit", "-m", "feat: hook driven change")
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatalf("HandlePostCommit() error = %v", err)
+	}
 
 	state := loadState(t, repo)
 	if state.Version != "v0.2.0" {
 		t.Fatalf("after hook version = %q, want v0.2.0", state.Version)
 	}
-	if !state.Pending {
-		t.Fatal("hook should mark the state pending")
+	if state.Pending {
+		t.Fatal("pending should be cleared after post-commit amend")
 	}
 
-	// Reconciliation run: the pending commit must be skipped, not double-counted.
+	// The version file must be inside the amended commit.
+	shown, _ := exec.Command("git", "-C", repo, "show", "--stat", "--format=", "HEAD").CombinedOutput()
+	if !strings.Contains(string(shown), ".lazyver.yaml") {
+		t.Errorf("version file not part of the commit:\n%s", shown)
+	}
+
+	// Reconciliation run: nothing new to count, no double bump.
 	version, err := Run(statefile.KindSemver, repo)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if version != "v0.2.0" {
-		t.Errorf("version after reconcile = %q, want v0.2.0 (no double bump)", version)
+		t.Errorf("version after reconcile = %q, want v0.2.0", version)
 	}
-	if state := loadState(t, repo); state.Pending {
-		t.Error("pending flag should be cleared after reconciliation")
+}
+
+// TestHandlePostCommitWithoutPending ensures the post-commit handler is a
+// no-op when there is no pending bump (also prevents amend recursion).
+func TestHandlePostCommitWithoutPending(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t)
+	commit(t, repo, "feat: one")
+	if _, err := Run(statefile.KindSemver, repo); err != nil {
+		t.Fatal(err)
 	}
+	headBefore := headHash(t, repo)
+
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatalf("HandlePostCommit() error = %v", err)
+	}
+	if headAfter := headHash(t, repo); headAfter != headBefore {
+		t.Error("post-commit without pending must not amend HEAD")
+	}
+}
+
+// headHash returns the current HEAD hash or fails the test.
+func headHash(t *testing.T, dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // TestLazyModeEndToEnd validates initialization, hook bump and
@@ -189,6 +248,9 @@ func TestLazyModeEndToEnd(t *testing.T) {
 		t.Fatalf("HandleHookMessage() error = %v", err)
 	}
 	run(t, repo, "commit", "-m", "sixth")
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatalf("HandlePostCommit() error = %v", err)
+	}
 
 	if version, _ = Run(statefile.KindLazy, repo); version != "v0.0.6" {
 		t.Errorf("version = %q, want v0.0.6", version)

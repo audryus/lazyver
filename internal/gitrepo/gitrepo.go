@@ -131,3 +131,20 @@ func StageFile(dir, file string) error {
 	_, err := Run(dir, "add", "-f", file)
 	return err
 }
+
+// AmendHead amends the current HEAD commit without opening an editor and
+// without triggering the pre-commit/commit-msg hooks again, folding whatever
+// is currently staged into the existing commit. Used by the post-commit hook
+// to include the version file that could not be added in time.
+func AmendHead(dir string) error {
+	_, err := Run(dir, "commit", "--amend", "--no-edit", "--no-verify")
+	return err
+}
+
+// IsPublished reports whether HEAD is reachable from any remote-tracking
+// branch, meaning it has likely been pushed. Amending such a commit would
+// rewrite public history, so callers use this to skip the auto-amend.
+func IsPublished(dir string) bool {
+	out, err := Run(dir, "branch", "-r", "--contains", "HEAD")
+	return err == nil && out != ""
+}

@@ -77,8 +77,9 @@ func Run(kind, dir string) (string, error) {
 
 // HandleHookMessage is the entry point used by the commit-msg hook. It reads
 // the commit message from messageFile (the path git passes as $1), applies
-// exactly one version bump for it, marks the state pending and stages the
-// version file so it is included in the ongoing commit.
+// exactly one version bump for it and marks the state pending. The actual
+// inclusion of the version file in the commit happens in HandlePostCommit,
+// because git has already built the commit tree by the time commit-msg runs.
 //
 // If the repository was never initialized, initialization happens first so
 // that even a brand-new repository gets a correct baseline version.
@@ -112,14 +113,48 @@ func HandleHookMessage(dir, messageFile string) error {
 
 	if bumped {
 		// The commit being created does not have a hash yet; flagging
-		// "pending" tells the next Run to skip exactly one commit (this
-		// one) when reconciling, avoiding a double bump.
+		// "pending" tells the post-commit hook to amend HEAD so the
+		// version file is included in this very commit, and tells the
+		// next Run to skip exactly one commit when reconciling.
 		state.Pending = true
 	}
 	if err := statefile.Save(dir, state); err != nil {
 		return err
 	}
 	return gitrepo.StageFile(dir, statefile.FileName)
+}
+
+// HandlePostCommit is the entry point used by the post-commit hook. When a
+// bump is pending (set by the commit-msg phase), it amends HEAD so the
+// version file becomes part of the commit that triggered it, then records
+// the amended hash as the new lastHash.
+//
+// Safety rules:
+//   - nothing happens when no bump is pending (this also prevents infinite
+//     recursion, since the amend itself fires the post-commit hook again);
+//   - the amend is skipped when HEAD is already reachable from a remote,
+//     i.e. the commit was pushed — rewriting public history is never done.
+func HandlePostCommit(dir string) error {
+	state, err := statefile.Load(dir)
+	if err != nil || state == nil || !state.Pending {
+		return err
+	}
+	// Never rewrite commits that are already public.
+	if gitrepo.IsPublished(dir) {
+		state.Pending = false
+		return statefile.Save(dir, state)
+	}
+
+	if err := gitrepo.AmendHead(dir); err != nil {
+		return fmt.Errorf("amend commit to include %s: %w", statefile.FileName, err)
+	}
+	headHash, err := gitrepo.HeadHash(dir)
+	if err != nil {
+		return err
+	}
+	state.LastHash = headHash
+	state.Pending = false
+	return statefile.Save(dir, state)
 }
 
 // initialize performs the one-time full-history scan: every commit message

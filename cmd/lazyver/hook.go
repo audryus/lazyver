@@ -5,8 +5,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// hookCmd is a hidden command invoked by the commit-msg git hook that
-// lazyver installs. Users are not expected to call it manually.
+// hookCmd is a hidden command invoked by the installed commit-msg git hook.
+// Users are not expected to call it manually.
 var hookCmd = &cobra.Command{
 	Use:    "hook <message-file>",
 	Short:  "Internal: invoked by the installed commit-msg git hook",
@@ -17,7 +17,21 @@ var hookCmd = &cobra.Command{
 	},
 }
 
+// hookPostCmd is a hidden command invoked by the installed post-commit git
+// hook. It amends HEAD so the bumped version file joins the commit.
+var hookPostCmd = &cobra.Command{
+	Use:    "hook-post",
+	Short:  "Internal: invoked by the installed post-commit git hook",
+	Hidden: true,
+	Args:   cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return app.HandlePostCommit(pathFlag)
+	},
+}
+
 func init() {
-	hookCmd.Flags().StringVar(&pathFlag, "path", "./", "Path to the repository (directory containing .git)")
-	rootCmd.AddCommand(hookCmd)
+	for _, c := range []*cobra.Command{hookCmd, hookPostCmd} {
+		c.Flags().StringVar(&pathFlag, "path", "./", "Path to the repository (directory containing .git)")
+	}
+	rootCmd.AddCommand(hookCmd, hookPostCmd)
 }
