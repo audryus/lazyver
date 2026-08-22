@@ -97,5 +97,9 @@ jobs:
           version: latest
           args: release --clean
         env:
+          # The runner auto-injects GITHUB_TOKEN into every job; goreleaser
+          # refuses to run with more than one token set, so blank it out and
+          # keep only the Codeberg credential.
+          GITHUB_TOKEN: ""
           GITEA_TOKEN: ${{ secrets.TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.version }}

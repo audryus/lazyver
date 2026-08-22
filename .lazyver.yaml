@@ -1,8 +1,8 @@
-version: v1.3.0
+version: v1.3.1
 major: 1
 minor: 3
-patch: 0
+patch: 1
 kind: semver
 lastHash: 9db31cc2e8a92c9fad95c8487db99b4b96ee1d4e
-pendingCount: 5
-last: 2026-08-22T17:29:12.930727149-03:00
+pendingCount: 6
+last: 2026-08-22T17:48:36.703918804-03:00
