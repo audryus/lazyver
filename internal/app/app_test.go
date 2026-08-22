@@ -90,8 +90,8 @@ func TestRunInitializesFromFullHistory(t *testing.T) {
 	if version != "v0.1.2" {
 		t.Errorf("version = %q, want v0.1.2", version)
 	}
-	if state := loadState(t, repo); state.Pending {
-		t.Error("pending should be false after initialization")
+	if state := loadState(t, repo); state.PendingCount != 0 {
+		t.Error("pendingCount should be zero after initialization")
 	}
 	if !hookInstalled(t, repo) {
 		t.Error("commit-msg hook not installed")
@@ -144,9 +144,10 @@ func TestRunIncrementalOnlyNewCommits(t *testing.T) {
 }
 
 // TestHookBumpThenRunNoDoubleCount is the critical end-to-end scenario:
-// the commit-msg hook bumps and marks pending, the post-commit hook amends
-// HEAD so the version file joins the commit, and a later Run must NOT count
-// that commit again.
+// the commit-msg hook bumps and marks the bump pending, the post-commit
+// hook amends HEAD so the version file joins the commit, and a later Run
+// must NOT count that commit again. It also verifies the working tree stays
+// clean after the whole cycle.
 func TestHookBumpThenRunNoDoubleCount(t *testing.T) {
 	gitAvailable(t)
 	repo := newRepo(t)
@@ -165,7 +166,7 @@ func TestHookBumpThenRunNoDoubleCount(t *testing.T) {
 	}
 
 	// Finish the commit like git would after a successful commit-msg hook,
-	// then simulate the post-commit hook (amend + lastHash update).
+	// then simulate the post-commit hook (amend).
 	run(t, repo, "commit", "-m", "feat: hook driven change")
 	if err := HandlePostCommit(repo); err != nil {
 		t.Fatalf("HandlePostCommit() error = %v", err)
@@ -175,14 +176,19 @@ func TestHookBumpThenRunNoDoubleCount(t *testing.T) {
 	if state.Version != "v0.2.0" {
 		t.Fatalf("after hook version = %q, want v0.2.0", state.Version)
 	}
-	if state.Pending {
-		t.Fatal("pending should be cleared after post-commit amend")
+	if state.PendingCount != 1 {
+		t.Fatalf("pendingCount = %d, want 1 (awaiting reconciliation)", state.PendingCount)
 	}
 
-	// The version file must be inside the amended commit.
+	// The version file must be inside the amended commit...
 	shown, _ := exec.Command("git", "-C", repo, "show", "--stat", "--format=", "HEAD").CombinedOutput()
 	if !strings.Contains(string(shown), ".lazyver.yaml") {
 		t.Errorf("version file not part of the commit:\n%s", shown)
+	}
+	// ...and the working tree must be clean (seamless experience).
+	status, _ := exec.Command("git", "-C", repo, "status", "--porcelain").CombinedOutput()
+	if strings.TrimSpace(string(status)) != "" {
+		t.Errorf("working tree dirty after commit cycle:\n%s", status)
 	}
 
 	// Reconciliation run: nothing new to count, no double bump.

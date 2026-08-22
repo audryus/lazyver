@@ -26,7 +26,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	in := &State{
 		Version: "v1.2.3", Major: 1, Minor: 2, Patch: 3,
-		Kind: KindSemver, LastHash: "abc123", Pending: true,
+		Kind: KindSemver, LastHash: "abc123", PendingCount: 2,
 	}
 	if err := Save(dir, in); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -36,7 +36,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Load() error = %v", err)
 	}
 	if out == nil || out.Version != "v1.2.3" || out.Major != 1 || out.Minor != 2 ||
-		out.Patch != 3 || out.Kind != KindSemver || out.LastHash != "abc123" || !out.Pending {
+		out.Patch != 3 || out.Kind != KindSemver || out.LastHash != "abc123" || out.PendingCount != 2 {
 		t.Fatalf("round trip mismatch: got %+v", out)
 	}
 	if out.Last.IsZero() {
@@ -65,7 +65,7 @@ func TestSaveYAMLLayout(t *testing.T) {
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, FileName))
 	text := string(data)
-	for _, key := range []string{"version:", "major:", "minor:", "patch:", "kind:", "lastHash:", "pending:", "last:"} {
+	for _, key := range []string{"version:", "major:", "minor:", "patch:", "kind:", "lastHash:", "pendingCount:", "last:"} {
 		if !strings.Contains(text, key) {
 			t.Errorf("yaml output missing key %q:\n%s", key, text)
 		}

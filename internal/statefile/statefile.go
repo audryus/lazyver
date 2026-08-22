@@ -34,10 +34,13 @@ type State struct {
 	Major    int       `yaml:"major"`    // Major component of the version.
 	Minor    int       `yaml:"minor"`    // Minor component of the version.
 	Patch    int       `yaml:"patch"`    // Patch component of the version.
-	Kind     string    `yaml:"kind"`     // Versioning mode: "semver" or "lazy".
-	LastHash string    `yaml:"lastHash"` // Hash of the last commit already counted.
-	Pending  bool      `yaml:"pending"`  // True when the hook already bumped for the commit right after LastHash.
-	Last     time.Time `yaml:"last"`     // Timestamp of the moment the file was last written.
+	Kind     string    `yaml:"kind"`        // Versioning mode: "semver" or "lazy".
+	LastHash string    `yaml:"lastHash"`    // Hash of the last commit already counted.
+	// PendingCount is how many recent commits were already bumped by the
+	// commit-msg hook but not yet reconciled into lastHash. Reconciliation
+	// always skips exactly this many most-recent commits.
+	PendingCount int       `yaml:"pendingCount"` // Hook bumps awaiting reconciliation.
+	Last         time.Time `yaml:"last"`         // Timestamp of the moment the file was last written.
 }
 
 // Load reads the state file from dir. It returns:

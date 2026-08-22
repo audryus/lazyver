@@ -112,11 +112,11 @@ func HandleHookMessage(dir, messageFile string) error {
 	}
 
 	if bumped {
-		// The commit being created does not have a hash yet; flagging
-		// "pending" tells the post-commit hook to amend HEAD so the
+		// The commit being created does not have a hash yet; counting it
+		// as pending tells the post-commit hook to amend HEAD so the
 		// version file is included in this very commit, and tells the
-		// next Run to skip exactly one commit when reconciling.
-		state.Pending = true
+		// next Run how many recent commits to skip when reconciling.
+		state.PendingCount++
 	}
 	if err := statefile.Save(dir, state); err != nil {
 		return err
@@ -126,8 +126,12 @@ func HandleHookMessage(dir, messageFile string) error {
 
 // HandlePostCommit is the entry point used by the post-commit hook. When a
 // bump is pending (set by the commit-msg phase), it amends HEAD so the
-// version file becomes part of the commit that triggered it, then records
-// the amended hash as the new lastHash.
+// version file becomes part of the commit that triggered it.
+//
+// It deliberately does NOT write anything after amending: the file staged
+// before the amend already carries the correct bump, and saving afterwards
+// would leave a perpetual uncommitted modification in the working tree.
+// Reconciliation of lastHash/pendingCount happens on the next Run.
 //
 // Safety rules:
 //   - nothing happens when no bump is pending (this also prevents infinite
@@ -136,25 +140,20 @@ func HandleHookMessage(dir, messageFile string) error {
 //     i.e. the commit was pushed — rewriting public history is never done.
 func HandlePostCommit(dir string) error {
 	state, err := statefile.Load(dir)
-	if err != nil || state == nil || !state.Pending {
+	if err != nil || state == nil || state.PendingCount == 0 {
 		return err
 	}
 	// Never rewrite commits that are already public.
 	if gitrepo.IsPublished(dir) {
-		state.Pending = false
-		return statefile.Save(dir, state)
+		return nil
 	}
-
+	if err := gitrepo.StageFile(dir, statefile.FileName); err != nil {
+		return err
+	}
 	if err := gitrepo.AmendHead(dir); err != nil {
 		return fmt.Errorf("amend commit to include %s: %w", statefile.FileName, err)
 	}
-	headHash, err := gitrepo.HeadHash(dir)
-	if err != nil {
-		return err
-	}
-	state.LastHash = headHash
-	state.Pending = false
-	return statefile.Save(dir, state)
+	return nil
 }
 
 // initialize performs the one-time full-history scan: every commit message
@@ -185,24 +184,28 @@ func initialize(dir, kind string) (*statefile.State, error) {
 	}
 
 	state.LastHash = headHash
-	state.Pending = false
+	state.PendingCount = 0
 	state.Version = state.Format()
 	return state, nil
 }
 
 // increment brings an existing state up to date by inspecting only the
-// commits created after state.LastHash. It honors the pending flag set by
-// the hook so a hook-bumped commit is never counted twice.
+// commits created after state.LastHash. Commits already bumped by the hook
+// are skipped based on PendingCount so they are never counted twice.
 func increment(dir string, state *statefile.State) error {
 	commits, err := gitrepo.CommitsBetween(dir, state.LastHash)
 	if err != nil {
 		return err
 	}
 
-	if state.Pending && len(commits) > 0 {
-		commits = commits[1:]
-		state.Pending = false
+	// Commits already bumped by the hook are always the most recent ones,
+	// so skip exactly PendingCount of them from the tail.
+	skip := state.PendingCount
+	if skip > len(commits) {
+		skip = len(commits)
 	}
+	commits = commits[:len(commits)-skip]
+	state.PendingCount = 0
 
 	switch state.Kind {
 	case statefile.KindLazy:
