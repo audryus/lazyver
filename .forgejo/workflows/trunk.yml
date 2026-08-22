@@ -86,20 +86,27 @@ jobs:
 
       # ──────────────────────────────────────────────
       # Build and publish binaries with goreleaser.
-      # GITEA_TOKEN makes goreleaser publish the release
-      # on the Forgejo instance detected from the remote.
+      # The runner auto-injects GITHUB_TOKEN into every job; goreleaser
+      # refuses to run when more than one token is present — even an empty
+      # one — so the variable is removed from the environment entirely
+      # before invoking the binary.
+      # GITEA_TOKEN makes goreleaser publish the release on the Forgejo
+      # instance detected from the git remote.
       # ──────────────────────────────────────────────
+      - name: Install goreleaser
+        if: steps.tagcheck.outputs.exists == 'false'
+        env:
+          GORELEASER_VERSION: v2.17.1
+        run: |
+          curl -sfL "https://github.com/goreleaser/goreleaser/releases/download/${GORELEASER_VERSION}/goreleaser_Linux_x86_64.tar.gz" \
+            | tar -xz -C /usr/local/bin goreleaser
+          goreleaser --version
+
       - name: Run goreleaser
         if: steps.tagcheck.outputs.exists == 'false'
-        uses: https://github.com/goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release --clean
         env:
-          # The runner auto-injects GITHUB_TOKEN into every job; goreleaser
-          # refuses to run with more than one token set, so blank it out and
-          # keep only the Codeberg credential.
-          GITHUB_TOKEN: ""
           GITEA_TOKEN: ${{ secrets.TOKEN }}
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.version }}
+        run: |
+          unset GITHUB_TOKEN
+          goreleaser release --clean
