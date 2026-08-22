@@ -51,26 +51,37 @@ func Run(kind, dir string) (string, error) {
 		return "", err
 	}
 
+	// dirty tracks whether the state materially changed and therefore must
+	// be persisted. Pure bookkeeping (zeroing pendingCount, advancing
+	// lastHash with no new commits to apply) is deferred to the next hook
+	// invocation, so a manual run never leaves the working tree dirty.
+	dirty := false
+
 	if state == nil {
 		state, err = initialize(dir, kind)
 		if err != nil {
 			return "", err
 		}
+		dirty = true
 	} else {
 		if state.Kind != "" && state.Kind != kind {
 			return "", fmt.Errorf("repository initialized with kind %q; refusing to run with %q (delete %s to reset)",
 				state.Kind, kind, statefile.FileName)
 		}
-		if err := increment(dir, state); err != nil {
+		applied, err := increment(dir, state)
+		if err != nil {
 			return "", err
 		}
+		dirty = applied > 0
 	}
 
 	if err := installHook(dir); err != nil {
 		return "", err
 	}
-	if err := statefile.Save(dir, state); err != nil {
-		return "", err
+	if dirty {
+		if err := statefile.Save(dir, state); err != nil {
+			return "", err
+		}
 	}
 	return state.Version, nil
 }
@@ -192,10 +203,13 @@ func initialize(dir, kind string) (*statefile.State, error) {
 // increment brings an existing state up to date by inspecting only the
 // commits created after state.LastHash. Commits already bumped by the hook
 // are skipped based on PendingCount so they are never counted twice.
-func increment(dir string, state *statefile.State) error {
+//
+// It returns how many NEW commits were actually applied (zero means the
+// state was already up to date and callers may skip persisting it).
+func increment(dir string, state *statefile.State) (int, error) {
 	commits, err := gitrepo.CommitsBetween(dir, state.LastHash)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Commits already bumped by the hook are always the most recent ones,
@@ -205,7 +219,9 @@ func increment(dir string, state *statefile.State) error {
 		skip = len(commits)
 	}
 	commits = commits[:len(commits)-skip]
-	state.PendingCount = 0
+	// Bookkeeping is updated in memory even when nothing is applied; it
+	// only reaches disk if the caller decides the change is material.
+	defer func() { state.PendingCount = 0 }()
 
 	switch state.Kind {
 	case statefile.KindLazy:
@@ -220,10 +236,10 @@ func increment(dir string, state *statefile.State) error {
 
 	headHash, err := gitrepo.HeadHash(dir)
 	if err != nil {
-		return fmt.Errorf("resolve HEAD: %w", err)
+		return 0, fmt.Errorf("resolve HEAD: %w", err)
 	}
 	state.LastHash = headHash
-	return nil
+	return len(commits), nil
 }
 
 // installHook delegates to hookmgr, resolving the running binary path so

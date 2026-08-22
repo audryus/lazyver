@@ -201,6 +201,49 @@ func TestHookBumpThenRunNoDoubleCount(t *testing.T) {
 	}
 }
 
+// TestManualRunKeepsTreeClean ensures that running lazyver manually when
+// there is nothing new to apply (pure bookkeeping) does NOT modify the
+// state file on disk, leaving the working tree clean.
+func TestManualRunKeepsTreeClean(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t)
+	commit(t, repo, "feat: one")
+	if _, err := Run(statefile.KindSemver, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a hook-bumped commit cycle.
+	msgFile := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
+	os.WriteFile(msgFile, []byte("fix: two\n"), 0o644)
+	if err := HandleHookMessage(repo, msgFile); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo, "commit", "-m", "fix: two")
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatal(err)
+	}
+
+	// A manual run right after must not dirty the working tree.
+	version, err := Run(statefile.KindSemver, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "v0.1.1" {
+		t.Errorf("version = %q, want v0.1.1", version)
+	}
+	status, _ := exec.Command("git", "-C", repo, "status", "--porcelain").CombinedOutput()
+	if strings.TrimSpace(string(status)) != "" {
+		t.Errorf("manual run dirtied the working tree:\n%s", status)
+	}
+
+	// And the file content on disk must be identical to HEAD.
+	headFile, _ := exec.Command("git", "-C", repo, "show", "HEAD:.lazyver.yaml").Output()
+	diskFile, _ := os.ReadFile(filepath.Join(repo, ".lazyver.yaml"))
+	if string(headFile) != string(diskFile) {
+		t.Error("state file on disk differs from committed version after manual run")
+	}
+}
+
 // TestHandlePostCommitWithoutPending ensures the post-commit handler is a
 // no-op when there is no pending bump (also prevents amend recursion).
 func TestHandlePostCommitWithoutPending(t *testing.T) {
