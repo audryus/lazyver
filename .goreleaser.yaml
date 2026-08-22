@@ -8,6 +8,12 @@
 
 version: 2
 
+# Publish releases on Codeberg (Forgejo). Without these URLs goreleaser
+# fails with "invalid URL: \"\"" because the instance cannot be inferred.
+gitea_urls:
+  api: https://codeberg.org/api/v1
+  download: https://codeberg.org
+
 before:
   hooks:
     # You may remove this if you don't use go modules.
@@ -24,7 +30,7 @@ builds:
       - darwin
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     # this name template makes the OS and Arch compatible with the results of `uname`.
     name_template: >-
       {{ .ProjectName }}_
@@ -36,7 +42,7 @@ archives:
     # use zip for windows archives
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 changelog:
   sort: asc
