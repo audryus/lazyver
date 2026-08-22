@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+    branches: ["trunk"]
+
+jobs:
+  test:
+    runs-on: self-hosted
+    name: Test
+    container:
+      image: node:20-bookworm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -count=1 -v -race -coverprofile=coverage.out ./...
+
+      - name: Vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          $(go env GOPATH)/bin/govulncheck ./...
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          go tool cover -func=coverage.out | tail -n 1

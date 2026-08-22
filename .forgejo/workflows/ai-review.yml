@@ -1,0 +1,109 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: gpu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install deps
+        run: apt-get update && apt-get install -y curl jq git
+
+      - name: Get PR diff
+        env:
+          BASE_BRANCH: ${{ forgejo.base_ref }}
+        run: |
+          echo "Base: $BASE_BRANCH"
+
+          git fetch origin "$BASE_BRANCH"
+
+          BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+
+          git diff "$BASE_SHA...HEAD" > /tmp/diff.txt
+
+      - name: Run AI Review with Ollama
+        id: review_check
+        env:
+          OLLAMA_HOST: http://host.containers.internal:11434
+          MODEL: qwen3.8:27b
+        run: |
+          # NOTE: /api/generate is used instead of /api/chat because the
+          # chat endpoint parses model output as tool-call XML and crashes
+          # on responses containing <function>/<parameter> tags
+          # ("XML syntax error: element <parameter> closed by </function>").
+          INSTRUCTIONS="Review the following git diff.
+          Review ONLY the modified lines.
+          Do not comment on unchanged code.
+          You have NO tools and CANNOT explore, read files, or run commands.
+          Everything you need is in the diff below.
+          Reply ONLY with the findings in the exact markdown format specified
+          by the system prompt (## <Severity> - <title>).
+          If there are no significant findings, reply with an empty response."
+
+          DIFF="$(cat /tmp/diff.txt)"
+          USER_MSG="$(printf '%s\n\nGit diff:\n\n%s' "$(sed 's/^          //' <<<"$INSTRUCTIONS")" "$DIFF")"
+
+          jq -n \
+            --rawfile system .forgejo/ai-review-prompt.md \
+            --arg user "$USER_MSG" \
+            '{
+              model: $ENV.MODEL,
+              stream: false,
+              system: $system,
+              prompt: $user,
+              options: {
+                temperature: 0.2,
+                num_ctx: 8192,
+                num_predict: 4096
+              }
+            }' > /tmp/request.json
+
+          curl -s "$OLLAMA_HOST/api/generate" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/request.json > /tmp/response.json
+
+          # Print response without the huge "context" token array
+          jq 'del(.context)' /tmp/response.json
+
+          if jq -e '.error' /tmp/response.json >/dev/null 2>&1; then
+            echo "Ollama returned an error, no comment will be posted."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          jq -r '.response // empty' /tmp/response.json \
+            | sed -e '/^[[:space:]]*$/d' > /tmp/review.md
+
+          # A valid review must contain at least one finding heading.
+          # Anything else (agent chatter, questions, preamble) is discarded.
+          if ! grep -qE '^#{1,3} (Critical|High|Medium|Low) - ' /tmp/review.md; then
+            echo "AI response is not a valid review (no findings found). No comment will be posted."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          elif [ ! -s /tmp/review.md ]; then
+            echo "AI review response is empty. No comment will be posted."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on PR via API
+        if: steps.review_check.outputs.empty != 'true'
+        env:
+          TOKEN: ${{ secrets.TOKEN }}
+          URL: ${{ forgejo.api_url }}
+          REPOSITORY: ${{ forgejo.repository }}
+          PR_NUMBER: ${{ forgejo.event.number }}
+        run: |
+          jq -Rs '{body: ("## AI Code Review\n\n" + .)}' /tmp/review.md > /tmp/comment.json
+
+          curl --fail \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/comment.json \
+          "$URL/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments"

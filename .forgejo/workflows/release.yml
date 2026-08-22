@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  VERSION: ${{ forgejo.ref_name }}
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Release: the tag was created by the trunk
+  # pipeline right after a full validation, so no
+  # tests run here — just changelog + release.
+  # ──────────────────────────────────────────────
+  release:
+    runs-on: self-hosted
+    name: Create Codeberg Release
+    container:
+      image: node:20-bookworm
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the changelog covers all commits
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Build a clean module cache so pkg.go.dev can index the module quickly
+      - name: Verify module
+        run: go mod verify
+
+      # Generate a changelog from commits since the previous tag
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "${VERSION}^" 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            LOG=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            LOG=$(git log --pretty=format:"- %s (%h)" "${PREV_TAG}..${VERSION}")
+          fi
+          # Write to a file to preserve newlines in the multiline output
+          echo "$LOG" > changelog.txt
+          echo "Changelog:"
+          cat changelog.txt
+
+      - name: Create Release
+        uses: https://github.com/softprops/action-gh-release@v2
+        with:
+          name: ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          body_path: changelog.txt
+          draft: false
+          prerelease: ${{ contains(env.VERSION, '-') }}  # e.g. v1.0.0-beta.1
+
+  # ──────────────────────────────────────────────
+  # Trigger pkg.go.dev indexing
+  # ──────────────────────────────────────────────
+  index:
+    runs-on: self-hosted
+    name: Trigger pkg.go.dev indexing
+    container:
+      image: node:20-bookworm
+    needs: release
+
+    steps:
+      - name: Fetch module from proxy to trigger indexing
+        run: |
+          MODULE="codeberg.org/audryus/lazyver"
+          curl -sSf "https://proxy.golang.org/${MODULE}/@v/${VERSION}.info" || true
+          curl -sSf "https://sum.golang.org/lookup/${MODULE}@${VERSION}" || true
