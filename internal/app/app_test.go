@@ -326,3 +326,177 @@ func TestRunOutsideRepository(t *testing.T) {
 		t.Error("Run outside a repository should fail")
 	}
 }
+
+// amendReflogCount returns how many amend operations are recorded in the
+// HEAD reflog, regardless of whether they changed the commit hash.
+func amendReflogCount(t *testing.T, dir string) int {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "reflog", "show", "--format=%gs", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "commit (amend)") {
+			count++
+		}
+	}
+	return count
+}
+
+// bumpCycle drives one hook-driven commit without letting the post-commit
+// handler run yet. When dropStagedFile is true, the version file is removed
+// from the index before committing so that HEAD does not contain it,
+// simulating flows where the commit-msg staging was lost.
+//
+// Note: these tests call the handlers directly, so the index behaves like a
+// plain `git add` — unlike a real commit-msg hook, where git snapshots the
+// tree beforehand and the staged file only reaches the commit through the
+// post-commit fold-in.
+func bumpCycle(t *testing.T, repo, message string, dropStagedFile bool) {
+	t.Helper()
+	msgFile := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
+	if err := os.WriteFile(msgFile, []byte(message+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := HandleHookMessage(repo, msgFile); err != nil {
+		t.Fatalf("HandleHookMessage() error = %v", err)
+	}
+	// Give the commit content of its own so it never becomes empty.
+	if err := os.WriteFile(filepath.Join(repo, "file.txt"), []byte(message), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, repo, "add", "file.txt")
+	if dropStagedFile {
+		run(t, repo, "restore", "--staged", statefile.FileName)
+	}
+	run(t, repo, "commit", "-m", message)
+}
+
+// headContains reports whether HEAD tracks the given path.
+func headContains(t *testing.T, dir, path string) bool {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "show", "--stat", "--format=", "HEAD").CombinedOutput()
+	return err == nil && strings.Contains(string(out), path)
+}
+
+// TestHandlePostCommitFoldsOnceThenStops is the regression test for the
+// infinite amend/post-commit loop: the defensive fold-in must happen exactly
+// once, and every subsequent invocation must be a no-op even though
+// pendingCount is still awaiting reconciliation.
+func TestHandlePostCommitFoldsOnceThenStops(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t)
+	commit(t, repo, "feat: base")
+	if _, err := Run(statefile.KindSemver, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	bumpCycle(t, repo, "fix: hooked change", true) // file misses the commit
+
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatalf("first HandlePostCommit() error = %v", err)
+	}
+	if amends := amendReflogCount(t, repo); amends != 1 {
+		t.Fatalf("amends after first post-commit = %d, want 1", amends)
+	}
+	if !headContains(t, repo, statefile.FileName) {
+		t.Error("version file still missing from HEAD after fold-in")
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := HandlePostCommit(repo); err != nil {
+			t.Fatalf("repeat HandlePostCommit() #%d error = %v", i+1, err)
+		}
+	}
+	if amends := amendReflogCount(t, repo); amends != 1 {
+		t.Errorf("post-commit amended %d extra times on repeat invocations (loop!)", amends-1)
+	}
+	state := loadState(t, repo)
+	if state.Version != "v0.1.1" || state.PendingCount != 1 {
+		t.Errorf("state = %s pending %d, want v0.1.1 pending 1", state.Version, state.PendingCount)
+	}
+}
+
+// TestHandlePostCommitNoOpWhenFileAlreadyInCommit ensures that when HEAD
+// already tracks the exact version file — e.g. after a previous fold-in
+// amend fired its own post-commit run — the handler is a strict no-op.
+func TestHandlePostCommitNoOpWhenFileAlreadyInCommit(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t)
+	commit(t, repo, "feat: base")
+	if _, err := Run(statefile.KindSemver, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	bumpCycle(t, repo, "fix: normal flow", false) // file travels in the commit
+
+	headBefore := headHash(t, repo)
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatalf("HandlePostCommit() error = %v", err)
+	}
+	if headHash(t, repo) != headBefore {
+		t.Error("HEAD changed although the version file was already committed")
+	}
+	if amends := amendReflogCount(t, repo); amends != 0 {
+		t.Errorf("amends = %d, want 0 (fold-in unnecessary)", amends)
+	}
+}
+
+// TestRunOnUnbornBranch covers initialization on a brand-new repository:
+// there is nothing to anchor yet, so lazyver must store an empty lastHash
+// instead of failing.
+func TestRunOnUnbornBranch(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t) // zero commits
+
+	version, err := Run(statefile.KindSemver, repo)
+	if err != nil {
+		t.Fatalf("Run() on unborn branch error = %v", err)
+	}
+	if version != "v0.0.0" {
+		t.Errorf("version = %q, want v0.0.0", version)
+	}
+	state := loadState(t, repo)
+	if state.LastHash != "" {
+		t.Errorf("lastHash = %q, want empty on unborn branch", state.LastHash)
+	}
+}
+
+// TestHookInitializesOnFirstCommit is the chicken-and-egg regression test:
+// on a fresh repository the very first commit has no HEAD to resolve while
+// the commit-msg hook runs, and it must still succeed end to end.
+func TestHookInitializesOnFirstCommit(t *testing.T) {
+	gitAvailable(t)
+	repo := newRepo(t) // zero commits
+
+	bumpCycle(t, repo, "feat: very first commit", false)
+
+	state := loadState(t, repo)
+	if state.Version != "v0.1.0" {
+		t.Errorf("version = %q, want v0.1.0", state.Version)
+	}
+	if !headContains(t, repo, statefile.FileName) {
+		t.Error("version file did not travel inside the first commit")
+	}
+	if err := HandlePostCommit(repo); err != nil {
+		t.Fatalf("HandlePostCommit() error = %v", err)
+	}
+	if amends := amendReflogCount(t, repo); amends != 0 {
+		t.Errorf("amends = %d, want 0 (file already folded by index staging)", amends)
+	}
+
+	status, _ := exec.Command("git", "-C", repo, "status", "--porcelain").CombinedOutput()
+	if strings.TrimSpace(string(status)) != "" {
+		t.Errorf("working tree dirty after first-commit cycle:\n%s", status)
+	}
+
+	// Reconciliation must not recount the hook-bumped commit.
+	version, err := Run(statefile.KindSemver, repo)
+	if err != nil {
+		t.Fatalf("reconcile Run() error = %v", err)
+	}
+	if version != "v0.1.0" {
+		t.Errorf("version after reconcile = %q, want v0.1.0", version)
+	}
+}

@@ -38,7 +38,10 @@ type State struct {
 	LastHash string    `yaml:"lastHash"`    // Hash of the last commit already counted.
 	// PendingCount is how many recent commits were already bumped by the
 	// commit-msg hook but not yet reconciled into lastHash. Reconciliation
-	// always skips exactly this many most-recent commits.
+	// always skips exactly this many most-recent commits. The value survives
+	// the post-commit phase on purpose: rewriting it there would leave the
+	// working tree dirty (or require another amend), so the next manual Run
+	// settles it instead.
 	PendingCount int       `yaml:"pendingCount"` // Hook bumps awaiting reconciliation.
 	Last         time.Time `yaml:"last"`         // Timestamp of the moment the file was last written.
 }

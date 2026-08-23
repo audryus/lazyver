@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -147,4 +148,32 @@ func AmendHead(dir string) error {
 func IsPublished(dir string) bool {
 	out, err := Run(dir, "branch", "-r", "--contains", "HEAD")
 	return err == nil && out != ""
+}
+
+// HeadContainsFile reports whether HEAD already tracks a blob whose content
+// is byte-identical to the working-tree copy of file. The comparison is done
+// through git object IDs (hash-object vs. ls-tree), so it never depends on
+// formatting or stdout trimming.
+//
+// Used by the post-commit handler to detect that a previous amend already
+// folded the version file into HEAD — every amend fires post-commit again,
+// and without this check the amend/post-commit cycle would never stop.
+func HeadContainsFile(dir, file string) bool {
+	workBlob, err := Run(dir, "hash-object", filepath.Join(dir, file))
+	if err != nil || workBlob == "" {
+		return false
+	}
+	treeOut, err := Run(dir, "ls-tree", "HEAD", "--", file)
+	if err != nil || treeOut == "" {
+		// File absent from HEAD (or unborn HEAD): nothing folded in yet.
+		return false
+	}
+	for _, line := range strings.Split(treeOut, "\n") {
+		// Entry format: "<mode> blob <sha>\t<path>"
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[2] == workBlob {
+			return true
+		}
+	}
+	return false
 }

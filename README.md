@@ -38,11 +38,11 @@ That's it. The binary `lazyver` will be available in your `$GOPATH/bin` (make su
    patch: 0
    kind: semver
    lastHash: 80dee7bf2fabab8e5aa6b34e75c611...
-   pending: false
+   pendingCount: 0
    last: 2025-01-15T09:19:47.01-03:00
    ```
 
-3. It also installs a **`commit-msg` git hook** that calls lazyver back on every future commit.
+3. It also installs two **git hooks** — `commit-msg` (classifies the message and bumps the version) and `post-commit` (folds the updated `.lazyver.yaml` into the same commit via an amend).
 4. From then on, each commit:
    - is classified by its message,
    - bumps the version,
@@ -50,6 +50,9 @@ That's it. The binary `lazyver` will be available in your `$GOPATH/bin` (make su
 
 > [!IMPORTANT]
 > A repository cannot mix modes. If you need to switch from `semver` to `lazy` (or back), delete `.lazyver.yaml` and run again.
+
+> [!WARNING]
+> lazyver only replaces git hooks that carry its marker (`# installed by lazyver`). If you already have your own `commit-msg` or `post-commit` hook, installation fails with a "refusing to overwrite" error instead of silently destroying your script — remove the file or integrate lazyver into it manually.
 
 ## Versioning modes
 
@@ -64,7 +67,10 @@ Pick one mode per repository:
 | `fix:`, `perf:`, `revert:`, `refactor:` | patch |
 | anything else (merge commits, wip...) | none |
 
-The type prefix is matched loosely, so `feature:` counts as `feat:` — lazy users are welcome.
+The type prefix is matched loosely (a plain prefix check at the start of the message), so `feature:` counts as `feat:` — lazy users are welcome.
+
+> [!WARNING]
+> Because matching is by prefix only, ordinary words that happen to *start* with a type name also bump the version: `fixed income report` → patch, `testing notes` → minor, `circleci config` → minor. When precision matters, use the conventional `type: description` format — a recognized prefix followed by a colon or scope is always unambiguous.
 
 ### lazy — commit-count driven
 
@@ -98,7 +104,7 @@ Both commands:
 
 - initialize the repository if `.lazyver.yaml` does not exist yet,
 - otherwise update it incrementally from the stored hash,
-- and (re)install the `commit-msg` hook.
+- and (re)install the managed git hooks (never touching foreign ones).
 
 There is also a hidden `lazyver hook <message-file>` subcommand — you should never call it yourself; the git hook does.
 
@@ -109,6 +115,70 @@ There is also a hidden `lazyver hook <message-file>` subcommand — you should n
 | `--path` | Path to the target repository (directory containing `.git`). Defaults to `.` |
 | `-o`, `--output` | Print the resulting version (e.g. `v1.2.3`) to stdout |
 | `-h`, `--help` | Show detailed help for any command |
+| `--version` | Show the binary version. Release builds report the release tag; binaries installed with `go install ...@vx.y.z` report that module version; local source builds show `dev` |
+
+## Manual hook integration
+
+When lazyver finds an existing hook without its marker, it refuses to touch
+the file. You keep full ownership and can wire lazyver into your own script —
+just replicate what lazyver itself installs:
+
+**What `lazyver semver` writes into `.git/hooks/commit-msg`:**
+
+```sh
+#!/bin/sh
+# installed by lazyver
+exec "/absolute/path/to/lazyver" hook "$@"
+```
+
+**What it writes into `.git/hooks/post-commit`:**
+
+```sh
+#!/bin/sh
+# installed by lazyver
+exec "/absolute/path/to/lazyver" hook-post "$@"
+```
+
+To merge those calls into **your** script instead, follow these rules:
+
+1. **`commit-msg` — forward the message file.** Git hands the path of the
+   commit message as `$1`; lazyver needs it to classify the commit. Place the
+   call *after* your own checks so your validations still gate the commit:
+
+   ```sh
+   #!/bin/sh
+   # my own checks first...
+   ./my-conventional-lint.sh "$1" || exit 1
+
+   # ...then let lazyver bump the version
+   lazyver hook --path "$(git rev-parse --show-toplevel)" "$1"
+   ```
+
+2. **`post-commit` — just invoke it once at the end.** It only acts when a
+   version bump is pending from the `commit-msg` phase, and never rewrites
+   commits that were already pushed:
+
+   ```sh
+   #!/bin/sh
+   ./my-notification.sh
+   lazyver hook-post --path "$(git rev-parse --show-toplevel)"
+   ```
+
+3. **Mind `exec`.** `exec` replaces the shell process with lazyver and ends
+   your script immediately. Keep it only when lazyver is the last thing your
+   hook does; otherwise call `lazyver ...` normally and propagate the status
+   yourself (`lazyver hook "$@" || exit 1`) — remember a failing `commit-msg`
+   aborts the commit.
+
+4. **Do not copy the marker into your file.** The line `# installed by
+   lazyver` marks files lazyver may overwrite wholesale on the next install.
+   Leaving it out of your own script is exactly what guarantees your
+   integration survives future `lazyver semver` / `lazyver lazy` runs.
+
+5. **Binary resolution.** The auto-installed hooks embed the absolute binary
+   path captured at install time (surviving `$PATH` changes). In manual
+   setups you can simply rely on `lazyver` being on `$PATH`, as shown above,
+   or pin the output of `command -v lazyver` for the same robustness.
 
 ## FAQ
 
@@ -120,6 +190,9 @@ Amending runs `commit-msg` again, which keeps the state consistent. History rewr
 
 **Does `.lazyver.yaml` need to be committed?**
 Yes — and lazyver stages it for you (`git add -f`), even if it matches a `.gitignore` rule.
+
+**I already have my own `commit-msg` / `post-commit` hook. Will lazyver replace it?**
+No. Hooks written by lazyver carry the marker line `# installed by lazyver`; files without it are treated as yours and left untouched — lazyver exits with a "refusing to overwrite" error instead. To use both, call `lazyver hook` / `lazyver hook-post` from inside your own scripts — see [Manual hook integration](#manual-hook-integration) for the exact recipes and caveats — or delete the foreign file and let lazyver manage it.
 
 ## License
 

@@ -6,12 +6,37 @@ package lazyver
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
 
-// version string shown in the root help.
+// versionString is the value shown by `lazyver --version`. It defaults to
+// "dev" for plain source builds and is overridden at link time by goreleaser
+// via `-X codeberg.org/audryus/lazyver/cmd/lazyver.versionString=<tag>`.
 var versionString = "dev"
+
+// resolvedVersion returns the most accurate version string available, in
+// order of preference:
+//
+//  1. the linker-injected versionString set by goreleaser at release time;
+//  2. the module version embedded in the build info when the binary was
+//     installed through `go install codeberg.org/audryus/lazyver@<tag>`;
+//  3. the fallback "dev", used for local source builds and tests.
+func resolvedVersion() string {
+	if versionString != "" && versionString != "dev" {
+		return versionString
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		switch v := info.Main.Version; v {
+		case "", "(devel)":
+			// Not installed from a tagged module revision.
+		default:
+			return v
+		}
+	}
+	return "dev"
+}
 
 // rootCmd is the entry point of the CLI. Running bare "lazyver" prints the
 // full help so users can discover both modes.

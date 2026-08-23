@@ -13,10 +13,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// Marker identifies hooks written by lazyver so that reinstalling never
-// clobbers a foreign hook silently.
+// Marker identifies hooks written by lazyver. Any existing hook file that
+// does not contain this marker is considered foreign and is never replaced.
 const Marker = "# installed by lazyver"
 
 const (
@@ -49,16 +50,29 @@ exec "%s" %s "$@"
 //   - binaryPath: absolute path of the lazyver executable that should be
 //     invoked by the hooks (obtained via os.Executable() by callers).
 //
-// Hooks are overwritten on every install so updates to the binary path are
-// picked up, and are always marked executable (0755).
+// Hooks already managed by lazyver (identified by Marker) are overwritten on
+// every install so updates to the binary path are picked up, and are always
+// marked executable (0755). A pre-existing hook file that does NOT contain
+// the marker is treated as foreign: it is left untouched and an error is
+// returned, so lazyver never clobbers a user's own hook silently. Removing
+// or integrating the foreign hook is up to the repository owner.
 func Install(repoPath, binaryPath string) error {
 	hooksDir := filepath.Join(repoPath, ".git", "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return fmt.Errorf("create hooks dir: %w", err)
 	}
 	for name, subcommand := range hooks {
-		script := fmt.Sprintf(hookTemplate, Marker, binaryPath, subcommand)
 		hookPath := filepath.Join(hooksDir, name)
+		data, err := os.ReadFile(hookPath)
+		switch {
+		case err == nil && !strings.Contains(string(data), Marker):
+			return fmt.Errorf(
+				"refusing to overwrite %s hook %q: it was not installed by lazyver; remove it or integrate lazyver into it manually",
+				name, hookPath)
+		case err != nil && !os.IsNotExist(err):
+			return fmt.Errorf("read %s hook: %w", name, err)
+		}
+		script := fmt.Sprintf(hookTemplate, Marker, binaryPath, subcommand)
 		if err := os.WriteFile(hookPath, []byte(script), 0o755); err != nil {
 			return fmt.Errorf("write %s hook: %w", name, err)
 		}
@@ -66,12 +80,12 @@ func Install(repoPath, binaryPath string) error {
 	return nil
 }
 
-// IsInstalled reports whether all lazyver-managed hooks already exist in
-// the repository at repoPath.
+// IsInstalled reports whether all lazyver-managed hooks exist in the
+// repository at repoPath AND were written by lazyver (i.e. carry Marker).
 func IsInstalled(repoPath string) bool {
 	for name := range hooks {
 		data, err := os.ReadFile(filepath.Join(repoPath, ".git", "hooks", name))
-		if err != nil || string(data) == "" {
+		if err != nil || !strings.Contains(string(data), Marker) {
 			return false
 		}
 	}

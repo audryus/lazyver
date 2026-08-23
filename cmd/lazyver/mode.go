@@ -89,5 +89,5 @@ Examples:
 
 	rootCmd.AddCommand(semverCmd)
 	rootCmd.AddCommand(lazyCmd)
-	rootCmd.Version = versionString
+	rootCmd.Version = resolvedVersion()
 }

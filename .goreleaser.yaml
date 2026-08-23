@@ -24,6 +24,11 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
+    # Strip symbol tables and inject the release tag into the CLI so
+    # `lazyver --version` reports the real version instead of "dev".
+    ldflags:
+      - -s -w
+      - -X codeberg.org/audryus/lazyver/cmd/lazyver.versionString={{ .Version }}
     goos:
       - linux
       - windows

@@ -88,12 +88,15 @@ func Run(kind, dir string) (string, error) {
 
 // HandleHookMessage is the entry point used by the commit-msg hook. It reads
 // the commit message from messageFile (the path git passes as $1), applies
-// exactly one version bump for it and marks the state pending. The actual
-// inclusion of the version file in the commit happens in HandlePostCommit,
-// because git has already built the commit tree by the time commit-msg runs.
+// exactly one version bump for it and marks the state pending. The bumped
+// version file is staged right away, but git has already snapshotted the
+// tree by the time commit-msg runs, so the staged copy only reaches the
+// commit through the post-commit amend (HandlePostCommit) — verified
+// empirically: ls-tree HEAD shows no version file until the amend lands.
 //
 // If the repository was never initialized, initialization happens first so
-// that even a brand-new repository gets a correct baseline version.
+// that even the very first commit of a brand-new repository gets a correct
+// baseline version (an unborn branch is tolerated).
 func HandleHookMessage(dir, messageFile string) error {
 	data, err := os.ReadFile(messageFile)
 	if err != nil {
@@ -124,9 +127,9 @@ func HandleHookMessage(dir, messageFile string) error {
 
 	if bumped {
 		// The commit being created does not have a hash yet; counting it
-		// as pending tells the post-commit hook to amend HEAD so the
-		// version file is included in this very commit, and tells the
-		// next Run how many recent commits to skip when reconciling.
+		// as pending tells the post-commit hook to anchor the state at the
+		// rewritten HEAD once this commit exists (and, defensively, to fold
+		// the version file in when it missed the commit).
 		state.PendingCount++
 	}
 	if err := statefile.Save(dir, state); err != nil {
@@ -139,14 +142,19 @@ func HandleHookMessage(dir, messageFile string) error {
 // bump is pending (set by the commit-msg phase), it amends HEAD so the
 // version file becomes part of the commit that triggered it.
 //
-// It deliberately does NOT write anything after amending: the file staged
-// before the amend already carries the correct bump, and saving afterwards
-// would leave a perpetual uncommitted modification in the working tree.
-// Reconciliation of lastHash/pendingCount happens on the next Run.
+// It deliberately does NOT rewrite the state file afterwards: the file staged
+// before the amend already carries the correct bump, and saving different
+// content would either dirty the working tree or require another amend whose
+// own post-commit run would see stale state again. Reconciliation of
+// lastHash/pendingCount happens on the next Run.
 //
 // Safety rules:
-//   - nothing happens when no bump is pending (this also prevents infinite
-//     recursion, since the amend itself fires the post-commit hook again);
+//   - nothing happens when no bump is pending;
+//   - nothing happens when HEAD already contains a byte-identical version
+//     file. This is what bounds the cycle: the ordinary staging during
+//     commit-msg usually puts the file in the commit directly, and when the
+//     defensive amend does run, its own post-commit invocation finds the
+//     file already folded in and returns — no infinite amend recursion;
 //   - the amend is skipped when HEAD is already reachable from a remote,
 //     i.e. the commit was pushed — rewriting public history is never done.
 func HandlePostCommit(dir string) error {
@@ -156,6 +164,13 @@ func HandlePostCommit(dir string) error {
 	}
 	// Never rewrite commits that are already public.
 	if gitrepo.IsPublished(dir) {
+		return nil
+	}
+	// Break the amend/post-commit recursion: once HEAD carries the very same
+	// version file, either the index staging during commit-msg already
+	// included it or a previous post-commit run folded it in — there is
+	// nothing left to do.
+	if gitrepo.HeadContainsFile(dir, statefile.FileName) {
 		return nil
 	}
 	if err := gitrepo.StageFile(dir, statefile.FileName); err != nil {
@@ -171,10 +186,11 @@ func HandlePostCommit(dir string) error {
 // since the beginning of the repository is replayed through the chosen
 // strategy and the resulting state is anchored at the current HEAD.
 func initialize(dir, kind string) (*statefile.State, error) {
-	headHash, err := gitrepo.HeadHash(dir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve HEAD (does the branch have any commits?): %w", err)
-	}
+	// An unborn branch (brand-new repository, e.g. during the commit-msg
+	// phase of its very first commit) cannot resolve HEAD yet. Anchoring is
+	// then deferred: lastHash stays empty and is recorded on the next
+	// reconciliation instead of failing the whole operation.
+	headHash, _ := gitrepo.HeadHash(dir)
 
 	commits, err := gitrepo.CommitsBetween(dir, "")
 	if err != nil {
@@ -201,8 +217,10 @@ func initialize(dir, kind string) (*statefile.State, error) {
 }
 
 // increment brings an existing state up to date by inspecting only the
-// commits created after state.LastHash. Commits already bumped by the hook
-// are skipped based on PendingCount so they are never counted twice.
+// commits created after state.LastHash. The PendingCount skip is a legacy
+// reconciliation path: since HandlePostCommit now anchors lastHash right
+// after every hook-driven commit, pendingCount is normally zero here and
+// nothing needs to be skipped.
 //
 // It returns how many NEW commits were actually applied (zero means the
 // state was already up to date and callers may skip persisting it).
@@ -212,8 +230,10 @@ func increment(dir string, state *statefile.State) (int, error) {
 		return 0, err
 	}
 
-	// Commits already bumped by the hook are always the most recent ones,
-	// so skip exactly PendingCount of them from the tail.
+	// Legacy states (written before post-commit anchoring existed, or when
+	// the amend was skipped for a published HEAD) may still carry pending
+	// commits: they are always the most recent ones, so skip exactly
+	// PendingCount of them from the tail.
 	skip := state.PendingCount
 	if skip > len(commits) {
 		skip = len(commits)
