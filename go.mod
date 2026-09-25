@@ -1,4 +1,4 @@
-module codeberg.org/audryus/lazyver
+module github.com/audryus/lazyver
 
 go 1.27.0
 

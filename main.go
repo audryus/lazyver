@@ -3,7 +3,7 @@
 // history, with automatic per-commit bumps through a git hook.
 package main
 
-import "codeberg.org/audryus/lazyver/cmd/lazyver"
+import "github.com/audryus/lazyver/cmd/lazyver"
 
 func main() {
 	lazyver.Execute()

@@ -1,0 +1,164 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # Runs on your own machine (Ollama lives there).
+    # Configure OLLAMA_HOST / OLLAMA_MODEL as repository Variables
+    # (Settings → Secrets and variables → Actions → Variables).
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install deps if missing
+        run: |
+          missing=0
+          for t in curl jq git; do
+            command -v "$t" >/dev/null || missing=1
+          done
+          if [ "$missing" = "1" ]; then
+            sudo apt-get update && sudo apt-get install -y curl jq git
+          fi
+
+      - name: Get PR diff
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+        run: |
+          echo "Base: $BASE_BRANCH"
+
+          git fetch origin "$BASE_BRANCH"
+
+          BASE_SHA=$(git merge-base "origin/$BASE_BRANCH" HEAD)
+
+          git diff "$BASE_SHA...HEAD" > /tmp/diff.txt
+
+      - name: Run AI Review with Ollama
+        id: review_check
+        timeout-minutes: 20
+        env:
+          OLLAMA_HOST: ${{ vars.OLLAMA_HOST }}
+          MODEL: ${{ vars.OLLAMA_MODEL }}
+        run: |
+          # Defaults when the repository Variables are not set.
+          : "${OLLAMA_HOST:=http://localhost:11434}"
+          : "${MODEL:=qwen3.8:27b}"
+          echo "Ollama host: $OLLAMA_HOST | model: $MODEL"
+
+          # --- Pre-flight: fail fast instead of hanging for 12+ minutes ---
+          if ! TAGS=$(curl -sS --connect-timeout 10 --max-time 30 "$OLLAMA_HOST/api/tags" 2>&1); then
+            echo "Cannot reach Ollama at $OLLAMA_HOST. Is 'ollama serve' running on the runner host?"
+            echo "Details: $TAGS"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! echo "$TAGS" | jq -e --arg m "$MODEL" '.models // [] | map(.name) | index($m) != null' >/dev/null; then
+            echo "Model '$MODEL' is not pulled on this host. Run: ollama pull $MODEL"
+            echo "Available models: $(echo "$TAGS" | jq -r '[.models // [] | .[].name] | join(", ")')"
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # --- Diff budget: the full-branch diff can exceed num_ctx (8192) ---
+          # and make generation crawl. Cap the diff FILE (never hold the
+          # whole diff in argv: a single >128KB argument fails exec with
+          # E2BIG "Argument list too long").
+          DIFF_MAX_CHARS=12000
+          echo "Diff size: $(wc -l < /tmp/diff.txt) lines, $(wc -c < /tmp/diff.txt) chars"
+          head -c "$DIFF_MAX_CHARS" /tmp/diff.txt > /tmp/diff-cap.txt
+          if [ "$(wc -c < /tmp/diff.txt)" -gt "$DIFF_MAX_CHARS" ]; then
+            printf '\n\n[NOTE: diff truncated to fit the model context window; later files were not reviewed.]' >> /tmp/diff-cap.txt
+          fi
+
+          # NOTE: /api/generate is used instead of /api/chat because the
+          # chat endpoint parses model output as tool-call XML and crashes
+          # on responses containing <function>/<parameter> tags
+          # ("XML syntax error: element <parameter> closed by </function>").
+          cat > /tmp/instructions.txt <<'EOF'
+          Review the following git diff.
+          Review ONLY the modified lines.
+          Do not comment on unchanged code.
+          You have NO tools and CANNOT explore, read files, or run commands.
+          Everything you need is in the diff below.
+          Reply ONLY with the findings in the exact markdown format specified
+          by the system prompt (## <Severity> - <title>).
+          If there are no significant findings, reply with an empty response.
+
+          Git diff:
+          EOF
+
+          # --rawfile slurps file content: no giant argv, no E2BIG.
+          jq -n \
+            --rawfile system .github/ai-review-prompt.md \
+            --rawfile instr /tmp/instructions.txt \
+            --rawfile diff /tmp/diff-cap.txt \
+            '{
+              model: $ENV.MODEL,
+              stream: false,
+              system: $system,
+              prompt: ($instr + "\n" + $diff),
+              options: {
+                temperature: 0.2,
+                num_ctx: 8192,
+                num_predict: 4096
+              }
+            }' > /tmp/request.json
+
+          # (In an 'if' condition so 'bash -e' doesn't abort before we handle it.)
+          if ! curl -sS --connect-timeout 10 --max-time 900 "$OLLAMA_HOST/api/generate" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/request.json > /tmp/response.json; then
+            CURL_RC=$?
+            echo "Ollama request failed/timed out (curl exit $CURL_RC) after up to 15 min."
+            echo "Likely causes: model too slow for this host, or Ollama stalled. Check 'ollama ps' and host resources."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Print response without the huge "context" token array
+          jq 'del(.context)' /tmp/response.json
+
+          if jq -e '.error' /tmp/response.json >/dev/null 2>&1; then
+            echo "Ollama returned an error, no comment will be posted."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          jq -r '.response // empty' /tmp/response.json \
+            | sed -e '/^[[:space:]]*$/d' > /tmp/review.md
+
+          # A valid review must contain at least one finding heading.
+          # Anything else (agent chatter, questions, preamble) is discarded.
+          if ! grep -qE '^#{1,3} (Critical|High|Medium|Low) - ' /tmp/review.md; then
+            echo "AI response is not a valid review (no findings found). No comment will be posted."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          elif [ ! -s /tmp/review.md ]; then
+            echo "AI review response is empty. No comment will be posted."
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Comment on PR via API
+        if: steps.review_check.outputs.empty != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          jq -Rs '{body: ("## AI Code Review\n\n" + .)}' /tmp/review.md > /tmp/comment.json
+
+          curl --fail \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d @/tmp/comment.json \
+          "https://api.github.com/repos/${REPOSITORY}/issues/${PR_NUMBER}/comments"

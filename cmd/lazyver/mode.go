@@ -3,8 +3,8 @@ package lazyver
 import (
 	"fmt"
 
-	"codeberg.org/audryus/lazyver/internal/app"
-	"codeberg.org/audryus/lazyver/internal/statefile"
+	"github.com/audryus/lazyver/internal/app"
+	"github.com/audryus/lazyver/internal/statefile"
 	"github.com/spf13/cobra"
 )
 

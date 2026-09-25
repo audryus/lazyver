@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strings"
 
-	"codeberg.org/audryus/lazyver/internal/commitmsg"
-	"codeberg.org/audryus/lazyver/internal/statefile"
+	"github.com/audryus/lazyver/internal/commitmsg"
+	"github.com/audryus/lazyver/internal/statefile"
 )
 
 // ApplySemVer updates state by replaying messages (oldest first) through the

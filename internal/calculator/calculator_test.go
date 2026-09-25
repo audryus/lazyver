@@ -3,7 +3,7 @@ package calculator
 import (
 	"testing"
 
-	"codeberg.org/audryus/lazyver/internal/statefile"
+	"github.com/audryus/lazyver/internal/statefile"
 )
 
 // TestApplySemVer verifies cumulative bumps across a sequence of messages,

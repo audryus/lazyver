@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  VERSION: ${{ github.ref_name }}
+
+permissions:
+  contents: write
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Release: the tag was created from a validated
+  # trunk (by `make release` or the Manual Release
+  # workflow), so no tests run here — GoReleaser
+  # builds the binaries and publishes the GitHub
+  # Release (changelog comes from .goreleaser.yaml).
+  # ──────────────────────────────────────────────
+  goreleaser:
+    runs-on: ubuntu-latest
+    name: Build and publish with GoReleaser
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the changelog covers all commits
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ──────────────────────────────────────────────
+  # Trigger pkg.go.dev indexing
+  # ──────────────────────────────────────────────
+  index:
+    runs-on: ubuntu-latest
+    name: Trigger pkg.go.dev indexing
+    needs: goreleaser
+
+    steps:
+      - name: Fetch module from proxy to trigger indexing
+        run: |
+          MODULE="github.com/audryus/lazyver"
+          curl -sSf "https://proxy.golang.org/${MODULE}/@v/${VERSION}.info" || true
+          curl -sSf "https://sum.golang.org/lookup/${MODULE}@${VERSION}" || true

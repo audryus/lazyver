@@ -8,12 +8,6 @@
 
 version: 2
 
-# Publish releases on Codeberg (Forgejo). Without these URLs goreleaser
-# fails with "invalid URL: \"\"" because the instance cannot be inferred.
-gitea_urls:
-  api: https://codeberg.org/api/v1
-  download: https://codeberg.org
-
 before:
   hooks:
     # You may remove this if you don't use go modules.
@@ -28,7 +22,7 @@ builds:
     # `lazyver --version` reports the real version instead of "dev".
     ldflags:
       - -s -w
-      - -X codeberg.org/audryus/lazyver/cmd/lazyver.versionString={{ .Version }}
+      - -X github.com/audryus/lazyver/cmd/lazyver.versionString={{ .Version }}
     goos:
       - linux
       - windows
@@ -55,3 +49,8 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+# GitHub releases: tags containing a hyphen (e.g. v1.0.0-beta.1) are
+# marked as pre-releases, plain vX.Y.Z tags become full releases.
+release:
+  prerelease: auto

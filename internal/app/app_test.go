@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"codeberg.org/audryus/lazyver/internal/statefile"
+	"github.com/audryus/lazyver/internal/statefile"
 )
 
 // gitAvailable skips the suite when the git binary is missing.

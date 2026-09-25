@@ -1,7 +1,7 @@
 package lazyver
 
 import (
-	"codeberg.org/audryus/lazyver/internal/app"
+	"github.com/audryus/lazyver/internal/app"
 	"github.com/spf13/cobra"
 )
 

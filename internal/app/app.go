@@ -18,10 +18,10 @@ import (
 	"fmt"
 	"os"
 
-	"codeberg.org/audryus/lazyver/internal/calculator"
-	"codeberg.org/audryus/lazyver/internal/gitrepo"
-	"codeberg.org/audryus/lazyver/internal/hookmgr"
-	"codeberg.org/audryus/lazyver/internal/statefile"
+	"github.com/audryus/lazyver/internal/calculator"
+	"github.com/audryus/lazyver/internal/gitrepo"
+	"github.com/audryus/lazyver/internal/hookmgr"
+	"github.com/audryus/lazyver/internal/statefile"
 )
 
 // Run synchronizes the version file in dir using the given versioning kind,

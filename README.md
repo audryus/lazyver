@@ -21,7 +21,7 @@ Because tagging releases manually is boring. With lazyver installed as a git hoo
 ## Installation
 
 ```bash
-go install codeberg.org/audryus/lazyver@latest
+go install github.com/audryus/lazyver@latest
 ```
 
 That's it. The binary `lazyver` will be available in your `$GOPATH/bin` (make sure it's on your `PATH`).
